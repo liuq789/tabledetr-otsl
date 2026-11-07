@@ -1,0 +1,70 @@
+# =============================================================================
+# tabeldetr-otsl 配置 —— OTSL 标签版本 (与 tabeldetr/ 各自独立)
+#
+# 标签: <fcel> <ecel> <span> <lcel> <ucel> <xcel> <nl> <eos>   (8 个, 无 thead/tbody)
+# 用法: from config import get_config; cfg = get_config()
+# 覆盖: python tools/verify_otsl.py --set data.img_size=896
+# =============================================================================
+
+project:
+  name: tabeldetr-otsl
+  seed: 42
+  output_dir: outputs
+
+# ---------------------------------------------------------------- 路径
+paths:
+  # 数据格式: jsonl 标注 + 同目录同名 png
+  # 可换的规模: train / train_20k / train_50k / train_100k / train_200k
+  train_jsonl: ../tabeldetr/data/train_50k/PubTabNet_train.jsonl
+  val_jsonl: ../tabeldetr/data/val/PubTabNet_val.jsonl
+  img_dir: null                      # null = 与 jsonl 同目录
+  resume: null                       # 断点续训的 checkpoint 路径
+
+# ---------------------------------------------------------------- 数据
+data:
+  img_size: 896                      # 896/32=28 -> 28x28=784 token
+  max_len: 500                       # 序列长度上限 (rows*cols+rows), 超出走 long_policy
+  long_policy: drop                  # drop / truncate (truncate 会切掉 <eos>)
+  num_workers: 4                    # WSL 只有 15G 内存, 8 worker 会 OOM (实测)
+  batch_size: 24
+  eval_batch_size: 8
+  pin_memory: false                 # 省一份 pinned 副本; GPU 传输慢一点但不会 OOM
+  prefetch_factor: 2                # 每个 worker 预取批数, 乘 worker 数 = 常驻内存
+
+# ---------------------------------------------------------------- 模型
+# ResNet backbone + N 个可学习 query: 共享层后分叉成 cls / box 双支路, 非自回归
+model:
+  backbone: resnet34                 # resnet18 / resnet34 / resnet50
+  pretrained: false                  # 是否加载 ImageNet 预训练权重
+  out_stride: 32                     # 32 -> 28x28=784 token (896 输入) | 16 -> 56x56 | 8 -> 112x112
+  hidden_dim: 512
+  nheads: 8                  # head_dim = 512/8 = 64
+  dec_layers: 6                      # 总层数上限 (cls/box 支路未显式指定时用它推)
+  shared_layers: 2                   # 双分支共享的前 N 层
+  cls_layers: 2                      # token 分类支路层数 (共享 2 + 2 = 4 层)
+  box_branch_layers: 3               # box 回归支路层数 (共享 2 + 3 = 5 层)
+  dim_feedforward: 2048      # = 4 x hidden
+  dropout: 0.1
+  num_classes: 8                     # 全部真实类别: 7 网格标签 + eos; pad 不是类别, 不占维度
+  num_queries: 500                   # 输出槽位数 = data.max_len
+  query_causal: true                 # query self-attention 用因果掩码
+  box_param: cxywh                   # box 头参数化: cxywh (保证 x0<=x1) | xyxy
+  box_layers: 1                      # box 输出前的小 MLP 层数
+
+# ---------------------------------------------------------------- 训练
+train:
+  epochs: 20
+  lr: 3.0e-4
+  lr_backbone: 3.0e-5
+  weight_decay: 1.0e-4
+  clip_max_norm: 1.0                 # 0.1 太紧, 前期收敛明显变慢
+  warmup_steps: 300                  # 线性 warmup 的 step 数 (0=关闭)
+  lr_drop: 14                        # 第 N 个 epoch 学习率 x0.1
+  amp: false                         # 面板/命令行用 --amp 打开
+  log_every: 20
+  save_every: 5
+  loss:
+    cell: 1.0                        # 7 分类 (只在真实格子上算, -100 忽略)
+    l1: 2.0                          # box 分轴 L1
+    giou: 2.0                         # box GIoU
+    aux: 0.0                         # 辅助 loss 权重
