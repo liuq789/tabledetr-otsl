@@ -1,0 +1,16 @@
+# 运行环境依赖
+#   pip install -r requirements.txt
+#
+# torch: 默认装 CPU 版; 有 GPU 时按官方命令装对应 CUDA 版本, 例如
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+torch>=2.0
+
+# 图像读取与预处理 (PIL)、张量拼装
+Pillow>=10.0
+numpy>=1.24
+
+# 配置加载 (config.yaml)
+PyYAML>=6.0
+
+# 可选: 仅 tools/verify_otsl.py 读取 parquet 时需要
+pyarrow>=15.0

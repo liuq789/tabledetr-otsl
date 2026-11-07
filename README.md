@@ -107,9 +107,6 @@ python -m pip install torch pillow numpy pyyaml
 python -m pip install pyarrow          # 只有 tools/verify_otsl.py 需要
 ```
 
-训练在 WSL（Ubuntu-2204）里执行 `~/miniconda3/envs/llm/bin/python`；
-Windows 侧 python 用于推理（CPU）和跑工具脚本。
-
 ---
 
 ## 5. 训练
@@ -282,15 +279,6 @@ for c in J["cells"]:
 | `python tools/viz_otsl.py --jsonl X --n 6 --span-only` | 生成「原图 ↔ 由标签重建的空壳表格」对照页，人工复核 |
 | `python tools/dashboard.py [--port 8126]` | 训练监控 + 启停 |
 
-回归基线：
-
-```
-verify_jsonl    50000/50000 通过 (100%)，另 2 条参考 HTML 自身残缺，单列 official_defect
-verify_otsl     394,944 条，纯净 99.9878%，48 条参考 HTML 行宽与 cols 冲突
-```
-
----
-
 ## 8. 一致性约定
 
 | 位置 | 约定 | 违反后果 |
@@ -309,6 +297,3 @@ verify_otsl     394,944 条，纯净 99.9878%，48 条参考 HTML 行宽与 cols
   键名或形状，因此天然被拦住，不需要额外检查
 - 只有 `data.img_size` 和 `model.box_param` 不体现在权重里，`train.py --resume` 会额外比一次：
 
-```
-续训中断: img_size 训练时是 896, 当前 config 是 768。
-```
