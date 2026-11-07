@@ -1,5 +1,5 @@
 # =============================================================================
-# tabeldetr-otsl 配置 —— OTSL 标签版本 (与 tabeldetr/ 各自独立)
+# tabledetr-otsl 配置 —— OTSL 标签版本
 #
 # 标签: <fcel> <ecel> <span> <lcel> <ucel> <xcel> <nl> <eos>   (8 个, 无 thead/tbody)
 # 用法: from config import get_config; cfg = get_config()
@@ -7,7 +7,7 @@
 # =============================================================================
 
 project:
-  name: tabeldetr-otsl
+  name: tabledetr-otsl
   seed: 42
   output_dir: outputs
 

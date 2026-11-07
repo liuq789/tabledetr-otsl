@@ -1,4 +1,4 @@
-# tabeldetr-otsl
+# tabledetr-otsl
 
 表格结构识别（TSR）工程。输入一张表格图片，输出**结构标签序列 + 每个单元格的 bbox**，
 由标签序列重建整张表的网格（含 rowspan / colspan）。
@@ -75,7 +75,7 @@
 ## 3. 目录结构
 
 ```
-tabeldetr-otsl/
+tabledetr-otsl/
 ├── config.yaml              # 全部参数（数据 / 模型 / 训练），唯一来源
 ├── config.py                # 配置加载: get_config / parse_overrides / save_config / validate
 ├── datasets/
