@@ -312,25 +312,3 @@ verify_otsl     394,944 条，纯净 99.9878%，48 条参考 HTML 行宽与 cols
 ```
 续训中断: img_size 训练时是 896, 当前 config 是 768。
 ```
-
----
-
-## 9. 已知限制
-
-**a) 内存。** 当前机器 WSL 内存 15.9 GB。`bs 32 + 8 workers + pin_memory=true` 时数据加载
-共享内存峰值约 9 GB，加上每个 epoch 末写两个 checkpoint（各 618 MB），容易在 epoch 边界被
-OOM killer 杀掉（特征是日志无 traceback 突然中断）。默认配置为 `workers 4 + pin_memory false`
-（整机峰值约 6.6 GB）。若需更大余量，在 `C:\Users\Administrator\.wslconfig` 设
-`memory=24GB` 后执行 `wsl --shutdown`。
-
-**b) 长表截断。** `num_queries = 500`，序列超过 500 的样本（约 0.18%）在 dataset 阶段被 drop
-（`data.long_policy=drop`）。推理时未预测出 `<eos>` 会在 JSON 的 `warning` 里提示。
-
-**c) `<span>` 不区分有无内容。** 有内容的合并起点与空的合并起点都标成 `span`，
-需要区分时用别的信号判断。
-
-**d) 少量样本的参考 HTML 与结构标注冲突。** 这类样本的 `structure` 完整、参考 HTML 行宽
-与 `cols` 不符；转换以 `structure` 为准，验证脚本将其单列为 `official_defect`，不计失败。
-
-**e) 空集保护。** `train.py` 在 `--limit-train` 小于一个 batch 且 `drop_last=true` 时会直接报错
-（避免「跑完一个 epoch 但零步训练」）；`infer.py` 在目录为空时报错。
