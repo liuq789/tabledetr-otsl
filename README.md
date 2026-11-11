@@ -188,6 +188,10 @@ Reference run (50k subset, 896 input, bs 32, epoch 15):
 val loss 1.245 | token_acc 93.34% | seq(full table) 56.50% | span_acc 51.15% | box_acc 68.15%
 ```
 
+These are **trial-run baselines** from a small subset, used to verify that the whole
+「data → labels → training → inference」chain trains end to end. No tuning, no full dataset,
+no ablations — they are **not final accuracy numbers**.
+
 ---
 
 ## 6. Inference
