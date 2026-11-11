@@ -1,5 +1,7 @@
 # tabledetr-otsl
 
+[English](README.en.md) | **中文**
+
 表格结构识别（TSR）工程。输入一张表格图片，输出**结构标签序列 + 每个单元格的 bbox**，
 由标签序列重建整张表的网格（含 rowspan / colspan）。
 
