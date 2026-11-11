@@ -1,52 +1,59 @@
 # tabledetr-otsl
 
-[English](README.en.md) | **中文**
+**English** | [中文](README.zh.md)
 
-表格结构识别（TSR）工程。输入一张表格图片，输出**结构标签序列 + 每个单元格的 bbox**，
-由标签序列重建整张表的网格（含 rowspan / colspan）。
+A table structure recognition (TSR) project. Given a table image, it predicts a **sequence of
+structure labels plus a bbox for every cell**, and rebuilds the full grid (including
+`rowspan` / `colspan`) from that label sequence.
 
-模型是 DETR 式**非自回归**解码：ResNet backbone 出特征序列，N 个可学习 query 并行输出整条标签序列，
-一次前向出全部结果，不做 teacher forcing，也不递归解码。
+The model decodes **non-autoregressively**, DETR style: a ResNet backbone produces a feature
+sequence, and N learnable queries emit the entire label sequence in parallel — one forward pass
+gives every result, with no teacher forcing and no recursive decoding.
 
 ```
-图片 896x896 -> ResNet34(/32, 28x28=784 token) -> +2D 正弦位置编码
-             -> 500 个可学习 query + 共享层 2 层 -> 分叉
-                ├─ cls 支路 2 层 -> 500 x 8  (7 网格标签 + eos)
-                └─ box 支路 3 层 -> 500 x 4  (cell 框, 归一化 0~1)
+image 896x896 -> ResNet34 (/32, 28x28 = 784 tokens) -> + 2D sinusoidal positional encoding
+              -> 500 learnable queries + 2 shared layers -> split
+                 ├─ cls branch, 2 layers -> 500 x 8  (7 grid labels + eos)
+                 └─ box branch, 3 layers -> 500 x 4  (cell boxes, normalised 0..1)
 ```
 
-参数量 51.50M，输出 `(500, 8)` 标签 + `(500, 4)` 框。
+51.50M parameters, outputs `(500, 8)` labels + `(500, 4)` boxes.
 
 ---
 
-## 1. 标签体系（8 类）
+## 1. Label scheme (8 classes)
 
-| id | 标签 | 含义 |
+| id | label | meaning |
 |---|---|---|
-| 0 | `<fcel>` | 有内容的单元格 |
-| 1 | `<ecel>` | 空单元格 |
-| 2 | `<span>` | 合并区左上角（带 rowspan / colspan） |
-| 3 | `<lcel>` | 被左边单元格横向跨过 |
-| 4 | `<ucel>` | 被上边单元格纵向跨过 |
-| 5 | `<xcel>` | 被左、上同时跨过（2D 合并区内部） |
-| 6 | `<nl>` | 行结束 |
-| 7 | `<eos>` | 序列结束 |
+| 0 | `<fcel>` | cell with content |
+| 1 | `<ecel>` | empty cell |
+| 2 | `<span>` | top-left corner of a merged region (carries rowspan / colspan) |
+| 3 | `<lcel>` | covered horizontally by the cell on the left |
+| 4 | `<ucel>` | covered vertically by the cell above |
+| 5 | `<xcel>` | covered from both left and above (inside a 2D merged region) |
+| 6 | `<nl>` | end of row |
+| 7 | `<eos>` | end of sequence |
 
-- 没有 thead / tbody，也没有 `colspan="2"` 这类带数字的参数 token。行数 = `<nl>` 个数，
-  列数 = 每行 cell 数，合并信息由 `span` + `lcel/ucel/xcel` 的分布隐式表达。
-- 序列长度 = `rows × (cols + 1) + 1`，与网格严格对齐，可直接 reshape 成 `(rows, cols+1)`。
-- `<eos>` 让模型学「序列到哪结束」，推理时遇到它就停，不需要额外预测行列数。
-- **pad 不是类别**：补齐位在 labels 里写 `-100`，`cross_entropy(ignore_index=-100)` 跳过，
-  所以 `num_classes = 8` 就是全部真实类别，不占额外维度。
-- 标签**不含文字**。需要文字时按输出的 bbox 裁图，再走 OCR。
+- There is no thead / tbody and no parameter token such as `colspan="2"`. Rows = number of `<nl>`,
+  columns = cells per row, and merge information is expressed implicitly by the distribution of
+  `span` + `lcel/ucel/xcel`.
+- Sequence length = `rows × (cols + 1) + 1`, strictly aligned with the grid, so it can be reshaped
+  into `(rows, cols+1)` directly.
+- `<eos>` lets the model learn where the sequence ends; inference stops on it, so row and column
+  counts never have to be predicted separately.
+- **Padding is not a class**: padded positions are written as `-100` in the labels and skipped by
+  `cross_entropy(ignore_index=-100)`, so `num_classes = 8` covers every real class and costs no
+  extra dimension.
+- Labels contain **no text**. When text is needed, crop the image by the predicted bbox and run OCR.
 
-数据侧统计（50k 子集）：序列长度 min 4 / 中位 60 / p95 231 / max 1300，约 30% 含合并单元格。
+Data-side statistics (50k subset): sequence length min 4 / median 60 / p95 231 / max 1300, and about
+30% of tables contain merged cells.
 
 ---
 
-## 2. 数据格式
+## 2. Data format
 
-`jsonl` 标注 + 同目录同名图片：
+`jsonl` annotations plus images of the same name in the same directory:
 
 ```json
 {
@@ -63,77 +70,80 @@
 }
 ```
 
-- `structure.tokens`：表格结构骨架（`<td>` 与 `</td>` 分开写，带属性时拆成 `<td` + ` colspan="2"` + `>` 三个 token）
-- `cells[i].bbox`：原图像素坐标，**空 cell 没有 bbox 字段**
-- 第 i 个 `<td` 对应 `cells[i]`，一一对应
+- `structure.tokens`: the table skeleton (`<td>` and `</td>` are separate tokens; tags with
+  attributes are split into `<td` + ` colspan="2"` + `>`).
+- `cells[i].bbox`: pixel coordinates in the original image. **Empty cells have no bbox field.**
+- The i-th `<td` corresponds to `cells[i]`, one to one.
 
-`datasets/convert.py` 在 `__getitem__` 里把 structure **现场转成**标签序列
-（按 `<tr>` 分行 → 按 rowspan 推进算网格 → 每格判 fcel/ecel/span/lcel/ucel/xcel → 行尾 `nl` → 末尾 `eos`），
-不生成第二套标注文件。数据路径由 `config.yaml` 的 `paths.train_jsonl / val_jsonl` 指定，
-`paths.img_dir` 为空时取 jsonl 所在目录。
+`datasets/convert.py` converts `structure` **on the fly** inside `__getitem__` (split by `<tr>` →
+advance the grid according to rowspan → classify each position as fcel/ecel/span/lcel/ucel/xcel →
+`nl` at the end of each row → `eos` at the very end), so no second annotation file is generated.
+Data paths come from `config.yaml` (`paths.train_jsonl / val_jsonl`); when `paths.img_dir` is empty,
+the directory of the jsonl is used.
 
 ---
 
-## 3. 目录结构
+## 3. Layout
 
 ```
 tabledetr-otsl/
-├── config.yaml              # 全部参数（数据 / 模型 / 训练），唯一来源
-├── config.py                # 配置加载: get_config / parse_overrides / save_config / validate
+├── config.yaml              # every parameter (data / model / training), single source of truth
+├── config.py                # config loading: get_config / parse_overrides / save_config / validate
 ├── datasets/
-│   ├── otsl.py              # 词表、build_grid 网格重建、grid_to_tokens 反推、grid_to_html
-│   ├── convert.py           # structure tokens -> 标签序列
-│   └── jsonl_dataset.py     # jsonl 字节偏移索引 + 图片加载 + collate
+│   ├── otsl.py              # vocabulary, build_grid, grid_to_tokens, grid_to_html
+│   ├── convert.py           # structure tokens -> label sequence
+│   └── jsonl_dataset.py     # byte-offset index over the jsonl + image loading + collate
 ├── models/
-│   ├── backbone.py          # ResNet18/34/50，输出 /32 特征图
-│   ├── common.py            # DualBranchHead（cls / box 双支路）+ 2D 正弦位置编码
-│   └── detr_nar.py          # DETR 式非自回归模型
-├── losses.py                # 交叉熵 + box L1 + GIoU（只在 mask=1 的位置算）
-├── train.py                 # 训练入口
-├── infer.py                 # 推理入口
+│   ├── backbone.py          # ResNet18/34/50, /32 feature map
+│   ├── common.py            # DualBranchHead (cls / box) + 2D sinusoidal positional encoding
+│   └── detr_nar.py          # DETR-style non-autoregressive model
+├── losses.py                # cross entropy + box L1 + GIoU (computed only where mask = 1)
+├── train.py                 # training entry point
+├── infer.py                 # inference entry point
 ├── tools/
-│   ├── dashboard.py         # 训练监控前端（启停、曲线、日志、run 对比）
-│   ├── verify_jsonl.py      # 标签转换正确性验证
-│   ├── verify_otsl.py       # 标签体系全量验证
-│   └── viz_otsl.py          # 原图 ↔ 重建表格 对照页
-├── outputs/                 # 训练产物: <run>/{last.pt,best.pt,train_log.jsonl,config_snapshot.yaml}
-└── logs/                    # 训练日志 <run>.log
+│   ├── dashboard.py         # training dashboard (start/stop, curves, logs, run comparison)
+│   ├── verify_jsonl.py      # verifies the label conversion
+│   ├── verify_otsl.py       # full validation of the label scheme
+│   └── viz_otsl.py          # side-by-side page: original image ↔ rebuilt table
+├── outputs/                 # training artefacts: <run>/{last.pt,best.pt,train_log.jsonl,config_snapshot.yaml}
+└── logs/                    # training logs <run>.log
 ```
 
 ---
 
-## 4. 环境
+## 4. Environment
 
 ```bash
 python -m pip install torch pillow numpy pyyaml
-python -m pip install pyarrow          # 只有 tools/verify_otsl.py 需要
+python -m pip install pyarrow          # only needed by tools/verify_otsl.py
 ```
 
 ---
 
-## 5. 训练
+## 5. Training
 
-### 5.1 命令行
+### 5.1 Command line
 
 ```bash
-# 从零训练
+# train from scratch
 python train.py --batch-size 32 --workers 4 --pretrained --amp --epochs 20 --out run1
 
-# 断点续训（接着 epoch+1 跑，优化器与 lr 调度一起恢复）
+# resume (continues from epoch+1; optimiser and lr schedule are restored too)
 python train.py --resume outputs/run1/last.pt --epochs 20 --batch-size 32 --workers 4 --amp
 
-# 小样本先跑通管线
+# smoke-test the pipeline on a small slice first
 python train.py --limit-train 500 --limit-val 40 --epochs 1
 ```
 
-参数：`--epochs / --batch-size / --lr / --workers / --amp / --no-amp / --device / --out / --resume /
---limit-train / --limit-val`，其余全部来自 `config.yaml`，可临时覆盖：
+Arguments: `--epochs / --batch-size / --lr / --workers / --amp / --no-amp / --device / --out /
+--resume / --limit-train / --limit-val`. Everything else comes from `config.yaml` and can be
+overridden ad hoc:
 
 ```bash
 python train.py --set data.img_size=896 model.dropout=0.2
 ```
 
-关键配置（`config.yaml`）：
+Key configuration (`config.yaml`):
 
 ```yaml
 data:   img_size 896 | max_len 500 | long_policy drop | batch_size 24 | num_workers 4
@@ -145,67 +155,69 @@ train:  epochs 20 | lr 3e-4 | lr_backbone 3e-5 | clip_max_norm 1.0 | warmup_step
         lr_drop 14 | loss {cell 1.0, l1 2.0, giou 2.0}
 ```
 
-`config.py` 启动时校验：`img_size` 能被 32 整除、`num_queries ≥ max_len`、
-`num_classes == 标签表大小`、`hidden_dim % nheads == 0`、两个 jsonl 存在。
+`config.py` validates at startup: `img_size` divisible by 32, `num_queries ≥ max_len`,
+`num_classes == size of the label table`, `hidden_dim % nheads == 0`, and both jsonl files exist.
 
-### 5.2 监控前端
+### 5.2 Dashboard
 
 ```bash
 python tools/dashboard.py --port 8126      # http://127.0.0.1:8126/
 ```
 
-- 左侧填参数（epochs / batch / img / lr_drop / workers / 因果 mask 开关）→「开始训练」
-- 右侧实时日志 + 每 epoch 曲线（loss / token_acc / seq_acc / span_acc / box_acc）
-- 勾「续训」会带 `--resume outputs/<run>/last.pt`
-- 下方 run 对比表：按 best token_acc 排序，标出每个 run 的 causal on/off
+- Fill in parameters on the left (epochs / batch / img / lr_drop / workers / causal-mask toggle) →
+  press "start training".
+- Live log on the right plus per-epoch curves (loss / token_acc / seq_acc / span_acc / box_acc).
+- Tick "resume" to pass `--resume outputs/<run>/last.pt`.
+- A run comparison table at the bottom, sorted by best token_acc, marking causal on/off per run.
 
-训练进程是控制台进程的子进程，**训练期间不要关控制台**。
+The training process is a child of the console process — **do not close the console while training**.
 
-### 5.3 指标
+### 5.3 Metrics
 
-| 指标 | 含义 |
+| metric | meaning |
 |---|---|
-| `token_acc` | 逐 token 准确率（大量 `nl`/`fcel` 会把数值拉高，不能单独看） |
-| `seq_acc` | **整张表结构全对的比例**，TSR 的真实准确率 |
-| `span_acc` | GT 为 `<span>` 的位置预测对的比例 |
-| `box_acc` | cell 框 IoU ≥ 0.5 的比例 |
-| `box_iou` | 平均 IoU |
+| `token_acc` | per-token accuracy (lots of `nl`/`fcel` inflate it; never read it alone) |
+| `seq_acc` | **fraction of tables whose structure is entirely correct** — the real TSR accuracy |
+| `span_acc` | accuracy at positions where the ground truth is `<span>` |
+| `box_acc` | fraction of cells with box IoU ≥ 0.5 |
+| `box_iou` | mean IoU |
 
-参考（50k 子集，896 输入，bs 32，第 15 epoch）：
+Reference run (50k subset, 896 input, bs 32, epoch 15):
 
 ```
-val loss 1.245 | token_acc 93.34% | seq(整表) 56.50% | span_acc 51.15% | box_acc 68.15%
+val loss 1.245 | token_acc 93.34% | seq(full table) 56.50% | span_acc 51.15% | box_acc 68.15%
 ```
 
 ---
 
-## 6. 推理
+## 6. Inference
 
 ```bash
-# 单张
+# single image
 python infer.py --image path/to/table.png
 
-# 整个目录（默认取前 8 张）
+# whole directory (first 8 images by default)
 python infer.py --dir path/to/images --limit 20
 
-# 指定 checkpoint，额外输出 HTML，不画框图
+# specific checkpoint, also emit HTML, skip the box visualisation
 python infer.py --image x.png --ckpt outputs/run1/best.pt --html --no-viz
 
-# 用 jsonl 里的 filename 当清单
+# use the filenames listed in a jsonl
 python infer.py --list path/to/val.jsonl --dir path/to/images --limit 50
 ```
 
-默认 `--ckpt outputs/detr_otsl/best.pt`、`--out outputs/infer`，设备自动选（CPU 约 230 ms/张）。
+Defaults: `--ckpt outputs/detr_otsl/best.pt`, `--out outputs/infer`, device chosen automatically
+(about 230 ms per image on CPU).
 
-每张图产出：
+Per image it produces:
 
 ```
-outputs/infer/<name>.json          # 结构化结果（主产物）
-outputs/infer/<name>_boxes.png     # 原图 + 每个 cell 的框和编号
-outputs/infer/<name>.html          # 由标签重建的表格（--html 时才有）
+outputs/infer/<name>.json          # structured result (main artefact)
+outputs/infer/<name>_boxes.png     # original image + a box and an index for every cell
+outputs/infer/<name>.html          # table rebuilt from the labels (only with --html)
 ```
 
-### 6.1 JSON 结构
+### 6.1 JSON structure
 
 ```json
 {
@@ -235,13 +247,16 @@ outputs/infer/<name>.html          # 由标签重建的表格（--html 时才有
 }
 ```
 
-- `bbox` 已反算回**原图像素**（`x_norm × img_size / scale`），可直接裁图
-- `cells` 只列**合并区左上角**（origin），用 `rowspan/colspan` 表达合并，不是每个网格位置都列
-- `r/c` 网格坐标（0 起）；`bbox` 用于裁图与校对
-- `kind`：`fcel` 有内容 / `ecel` 空 / `span` 合并区（`is_span` 或面积 > 1 都算）
-- `warning` 记录「序列没出现 eos」「cell 标签数与网格 cell 数不一致」这类异常
+- `bbox` is mapped back to **original-image pixels** (`x_norm × img_size / scale`), ready for
+  cropping.
+- `cells` lists only the **top-left corner of each merged region** (the origin) and expresses merges
+  through `rowspan/colspan`; it is not one entry per grid position.
+- `r/c` are grid coordinates (0-based); `bbox` is for cropping and visual checks.
+- `kind`: `fcel` has content / `ecel` empty / `span` merged region (`is_span` or area > 1).
+- `warning` records anomalies such as "no eos in the sequence" or "cell label count does not match
+  the number of grid cells".
 
-### 6.2 代码里调用
+### 6.2 Calling from code
 
 ```python
 import torch
@@ -255,9 +270,9 @@ res = infer_one(model, cfg, torch.device("cpu"),
 print(res["rows"], res["cols"], res["cells"][0]["bbox"])
 ```
 
-### 6.3 转 docx
+### 6.3 Converting to docx
 
-`cells` 的 `r / c / rowspan / colspan` 直接对应 python-docx：
+`r / c / rowspan / colspan` from `cells` map directly onto python-docx:
 
 ```python
 table = doc.add_table(rows=J["rows"], cols=J["cols"])
@@ -265,37 +280,37 @@ for c in J["cells"]:
     a = table.cell(c["r"], c["c"])
     if c["rowspan"] > 1 or c["colspan"] > 1:
         a = a.merge(table.cell(c["r"] + c["rowspan"] - 1, c["c"] + c["colspan"] - 1))
-    a.text = c.get("text", "")        # 文字需另接 OCR
+    a.text = c.get("text", "")        # text needs a separate OCR pass
 ```
 
-列宽按 `bbox` 的 x 边界聚类反推，不要等分。
+Derive column widths by clustering the x boundaries of `bbox` values; do not divide them evenly.
 
 ---
 
-## 7. 工具
+## 7. Tools
 
-| 命令 | 作用 |
+| command | purpose |
 |---|---|
-| `python tools/verify_jsonl.py [--jsonl X --limit N]` | 逐条验证 `structure → 标签 → 网格 → HTML` 与原标注 HTML **逐字符相等** |
-| `python tools/verify_otsl.py [--parquet-dir X]` | 标签体系全量验证（数据源为含官方 otsl 的 parquet） |
-| `python tools/viz_otsl.py --jsonl X --n 6 --span-only` | 生成「原图 ↔ 由标签重建的空壳表格」对照页，人工复核 |
-| `python tools/dashboard.py [--port 8126]` | 训练监控 + 启停 |
+| `python tools/verify_jsonl.py [--jsonl X --limit N]` | validates `structure → labels → grid → HTML` against the original annotated HTML, character by character |
+| `python tools/verify_otsl.py [--parquet-dir X]` | full validation of the label scheme (source: parquet files containing official OTSL) |
+| `python tools/viz_otsl.py --jsonl X --n 6 --span-only` | builds a side-by-side page of "original image ↔ empty table rebuilt from labels" for manual review |
+| `python tools/dashboard.py [--port 8126]` | training dashboard and process control |
 
-## 8. 一致性约定
+## 8. Consistency rules
 
-| 位置 | 约定 | 违反后果 |
+| where | rule | what breaks if violated |
 |---|---|---|
-| `models/*` 变量名 | 必须等于 checkpoint 的键名 | ckpt 无法加载 |
-| `model.num_classes` | 等于 `datasets/otsl.py` 的 `NUM_CLASSES` | 分类头错位，`config.py` 启动即报错 |
-| `model.num_queries` | ≥ `data.max_len` | 超长标签被截断，`config.py` 启动即报错 |
-| `data.img_size` | 能被 32 整除 | backbone 特征图取整出错 |
-| 数据集的 box 坐标系 | 固定为**输入图像素**（896 画布） | 训练侧再 ÷ img_size 归一化；改动需同步 `train.py` 与 `infer.py` |
-| 标签表顺序 | `fcel/ecel/span/lcel/ucel/xcel/nl/eos` | 顺序变了等于重新定义类别，必须重训 |
+| variable names in `models/*` | must match the checkpoint keys | the checkpoint cannot be loaded |
+| `model.num_classes` | equals `NUM_CLASSES` in `datasets/otsl.py` | classification head misaligned; `config.py` fails at startup |
+| `model.num_queries` | ≥ `data.max_len` | over-long label sequences get truncated; `config.py` fails at startup |
+| `data.img_size` | divisible by 32 | backbone feature-map rounding breaks |
+| dataset box coordinate system | always **input-image pixels** (the 896 canvas) | training divides by `img_size` afterwards; changing it requires updating both `train.py` and `infer.py` |
+| label table order | `fcel/ecel/span/lcel/ucel/xcel/nl/eos` | a different order means redefining the classes — retrain from scratch |
 
-**权重加载**直接用 PyTorch 原生的严格模式（`model.load_state_dict(ck, strict=True)`）：
+**Weight loading** uses PyTorch's native strict mode (`model.load_state_dict(ck, strict=True)`):
 
-- 键名不同、形状不同 → 直接抛错，不会加载一半
-- `hidden_dim` / `num_classes` / `num_queries` / `backbone` / `out_stride` 变化都会改变权重的
-  键名或形状，因此天然被拦住，不需要额外检查
-- 只有 `data.img_size` 和 `model.box_param` 不体现在权重里，`train.py --resume` 会额外比一次：
-
+- different key names or shapes → it raises immediately instead of loading half a model;
+- changing `hidden_dim` / `num_classes` / `num_queries` / `backbone` / `out_stride` alters key names
+  or shapes, so those mismatches are caught for free with no extra checks;
+- only `data.img_size` and `model.box_param` are invisible to the weights, and `train.py --resume`
+  performs an extra explicit comparison for those two.
